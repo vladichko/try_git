@@ -1,106 +1,34 @@
-// This Jenkinsfile's main purpose is to show a real-world-ish example
-// of what Pipeline config syntax actually looks like. 
-pipeline {
-    // Make sure that the tools we need are installed and on the path.
-    tools {
-        maven "mvn"
-        jdk "jdk8"
-    }
+node {
+  // Mark the code checkout 'stage'....
+  stage 'Stage Checkout'
 
-    agent none
+  // Checkout code from repository and update any submodules
+  checkout scm
+  sh 'git submodule update --init'  
 
-    // Set log rotation, timeout and timestamps in the console
-    options {
-        buildDiscarder(logRotator(numToKeepStr:'10'))
-        timestamps()
-        timeout(time: 90, unit: 'MINUTES')
-    }
+  stage 'Stage Build'
 
-    // Make sure we have GIT_COMMITTER_NAME and GIT_COMMITTER_EMAIL set due to machine weirdness.
-    environment {
-        GIT_COMMITTER_NAME = "jenkins"
-        GIT_COMMITTER_EMAIL = "jenkins@jenkins.io"
-        NEWER_CORE_VERSION = "2.89.3"
-    }
-    
+  //branch name from Jenkins environment variables
+  echo "My branch is: ${env.BRANCH_NAME}"
 
-    stages {
-        // While there is only one stage here, you can specify as many stages as you like!
-        stage("build") {
-            parallel {
-                stage("linux") {
-                    agent {
-                        label "highmem"
-                    }
-                    steps {
-                        sh 'mvn clean install -Dmaven.test.failure.ignore=true -Djenkins.test.timeout=360'
-                    }
-                    post {
-                        // No matter what the build status is, run this step. There are other conditions
-                        // available as well, such as "success", "failed", "unstable", and "changed".
-                        always {
-                            junit testResults: '*/target/surefire-reports/*.xml', keepLongStdio: true
-                        }
-                        success {
-                            archive "**/target/*.hpi"
-                            archive "**/target/site/jacoco/jacoco.xml"
-                        }
-                        unstable {
-                            archive "**/target/*.hpi"
-                            archive "**/target/site/jacoco/jacoco.xml"
-                        }
-                    }
-                }
-                stage("windows") {
-                    agent {
-                        label "windows"
-                    }
-                    steps {
-                        bat 'mvn clean install -Dconcurrency=1 -Dmaven.test.failure.ignore=true -Dcodenarc.skip=true -Djenkins.test.timeout=360'
-                    }
-                    post {
-                        always {
-                            junit testResults: '*/target/surefire-reports/*.xml', keepLongStdio: true
-                        }
-                    }
-                }
-                stage("linux-newer-core") {
-                    agent {
-                        label "highmem"
-                    }
-                    steps {
-                        sh "mvn clean install -Dmaven.test.failure.ignore=true -Djava.level=8 -Djenkins.test.timeout=360 -Djenkins.version=${NEWER_CORE_VERSION}"
-                    }
-                    post {
-                        // No matter what the build status is, run this step. There are other conditions
-                        // available as well, such as "success", "failed", "unstable", and "changed".
-                        always {
-                            junit testResults: '*/target/surefire-reports/*.xml', keepLongStdio: true
-                        }
-                        success {
-                            archive "**/target/*.hpi"
-                            archive "**/target/site/jacoco/jacoco.xml"
-                        }
-                        unstable {
-                            archive "**/target/*.hpi"
-                            archive "**/target/site/jacoco/jacoco.xml"
-                        }
-                    }
-                }
-                stage("windows-newer-core") {
-                    agent {
-                        label "windows"
-                    }
-                    steps {
-                        bat "mvn clean install -Dconcurrency=1 -Dmaven.test.failure.ignore=true -Dcodenarc.skip=true -Djava.level=8 -Djenkins.test.timeout=360 -Djenkins.version=${NEWER_CORE_VERSION}"
-                    }
-                    post {
-                        always {
-                            junit testResults: '*/target/surefire-reports/*.xml', keepLongStdio: true
-                        }
-                    }
-                }
-            }
-        }
-    }
+  def flavor = flavor(env.BRANCH_NAME)
+  echo "Building flavor ${flavor}"
+
+  //build your gradle flavor, passes the current build number as a parameter to gradle
+  sh "./gradlew clean assemble${flavor}Debug -PBUILD_NUMBER=${env.BUILD_NUMBER}"
+
+  stage 'Stage Archive'
+  //tell Jenkins to archive the apks
+  archiveArtifacts artifacts: 'app/build/outputs/apk/*.apk', fingerprint: true
+
+  stage 'Stage Upload To Fabric'
+  sh "./gradlew crashlyticsUploadDistribution${flavor}Debug  -PBUILD_NUMBER=${env.BUILD_NUMBER}"
+}
+
+// Pulls the android flavor out of the branch name the branch is prepended with /QA_
+@NonCPS
+def flavor(branchName) {
+  def matcher = (env.BRANCH_NAME =~ /QA_([a-z_]+)/)
+  assert matcher.matches()
+  matcher[0][1]
 }
